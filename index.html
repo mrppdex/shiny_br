@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dynamic Table with JavaScript</title>
+  <style>
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    table, th, td {
+      border: 1px solid black;
+    }
+    th, td {
+      padding: 8px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Dynamic Table Construction</h2>
+  
+  <div>
+    <button id="addRowBtn">Add Row</button>
+    <button id="removeRowBtn">Remove Row</button>
+    <br><br>
+    <input type="text" id="newColName" placeholder="New Column Name">
+    <button id="addColBtn">Add Column</button>
+    <button id="removeColBtn">Remove Last Column</button>
+  </div>
+
+  <br>
+  
+  <table id="dynamicTable">
+    <thead>
+      <tr id="headerRow">
+        <th>Header 1</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Row 1, Col 1</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <script>
+    // Get references to DOM elements
+    const table = document.getElementById('dynamicTable');
+    const headerRow = document.getElementById('headerRow');
+    const tbody = table.querySelector('tbody');
+    
+    // Function to add a row
+    function addRow() {
+      const newRow = document.createElement('tr');
+      const cellsCount = headerRow.children.length;
+      for (let i = 0; i < cellsCount; i++) {
+        const newCell = document.createElement('td');
+        newCell.textContent = `Row ${tbody.children.length + 1}, Col ${i + 1}`;
+        newRow.appendChild(newCell);
+      }
+      tbody.appendChild(newRow);
+    }
+    
+    // Function to remove the last row
+    function removeRow() {
+      if (tbody.children.length > 0) {
+        tbody.removeChild(tbody.lastChild);
+      }
+    }
+    
+    // Function to add a column
+    function addColumn() {
+      const newColName = document.getElementById('newColName').value.trim();
+      if (newColName === '') return;
+      
+      // Add header for new column
+      const newHeader = document.createElement('th');
+      newHeader.textContent = newColName;
+      headerRow.appendChild(newHeader);
+      
+      // Add cells for new column in each row
+      for (const row of tbody.children) {
+        const newCell = document.createElement('td');
+        newCell.textContent = `Row ${Array.from(tbody.children).indexOf(row) + 1}, Col ${headerRow.children.length}`;
+        row.appendChild(newCell);
+      }
+    }
+    
+    // Function to remove the last column
+    function removeColumn() {
+      if (headerRow.children.length > 0) {
+        // Remove header
+        headerRow.removeChild(headerRow.lastChild);
+        
+        // Remove the last cell in each row
+        for (const row of tbody.children) {
+          row.removeChild(row.lastChild);
+        }
+      }
+    }
+    
+    // Event listeners for buttons
+    document.getElementById('addRowBtn').addEventListener('click', addRow);
+    document.getElementById('removeRowBtn').addEventListener('click', removeRow);
+    document.getElementById('addColBtn').addEventListener('click', addColumn);
+    document.getElementById('removeColBtn').addEventListener('click', removeColumn);
+  </script>
+
+</body>
+</html>
