@@ -1,6 +1,7 @@
+# Load necessary libraries
 library(shiny)
 library(shinyjs)
-library(DT)
+library(rhandsontable)  # Replacing DT with rhandsontable
 library(bslib)
 library(dplyr)
 library(tidyr)
@@ -8,12 +9,13 @@ library(tidyr)
 options(shiny.minified=TRUE)
 options(shiny.fullstacktrace = FALSE)
 
-# load brrr from cloned repo
+# Load brrr from cloned repo
 current_wd <- getwd()
 setwd("/Users/mrppdex/projects/R/brrr")
 devtools::load_all()
 setwd(current_wd)
 
+# Helper functions
 get_next_index <- function(vec) {
   next_index <- NULL
   vec <- vec[!is.na(vec)]
@@ -30,35 +32,19 @@ rotate_vector <- function(x, k) {
   return(c(x[(k+1):length(x)], x[1:k]))
 }
 
+# Define UI
 ui <- page_sidebar(
   title = "Benefit-Risk Visualization Tool",
   header = tags$head(useShinyjs()),
-  sidebar = sidebar(
-    h4("Table Controls"),
-    actionButton("add_col", "Add Column", class = "btn-primary"),
-    textInput('column_name', '', placeholder = 'Enter Columns Name'),
-    br(),
-    actionButton("remove_col", "Remove Selected Columns", class = "btn-danger"),
-    textInput('remove_column_name', '', placeholder = 'Remove Column Name'),
-    br(), br(),
-    actionButton("add_row", "Add Row", class = "btn-primary"),
-    actionButton("remove_row", "Remove Selected Rows", class = "btn-danger"),
-    br(), br(),
-    p("Rename column:"),
-    selectInput('current_col_name', "", choices = c("Column_1")),
-    p(' = '),
-    textInput("new_col_name", "", "New Name"),
-    actionButton("rename_col", "Rename column", class = "btn-primary")
-  ),
+  # Removed sidebar
   navset_card_tab(
     nav_panel("Input Data", 
       fluidRow(
-        column(4, p('Assign selected rows to axis')),
-        column(4, selectInput('add_to_axis_number', 
-          label=NULL, choices=c(1), selected=1)), 
-        column(4, actionButton('add_to_axis_btn', label='Add'))
-      ), hr(),
-      DTOutput("data_table")
+        column(6, actionButton("add_col", "Add Column", class = "btn-primary")),
+        column(6, actionButton("remove_col", "Remove Column", class = "btn-danger"))
+      ),
+      hr(),
+      rHandsontableOutput("data_table")  # Replaced DTOutput with rHandsontableOutput
     ),
     nav_panel("Axes",
         actionButton("add_axis", "Add Axis"),
@@ -89,7 +75,7 @@ ui <- page_sidebar(
           column(4, p("Column Name")),
           column(2, p("Separate")),
           column(3, p("Width")),
-          column(1, p("Include")),
+          column(1, p("Show")),
           column(2, p("Order"))
         ),
         uiOutput("dynamic_col_table")
@@ -139,39 +125,45 @@ ui <- page_sidebar(
   )
 )
 
+# Define Server
 server <- function(input, output, session) {
-  # colum order index tracker
+  # Column order index tracker
   col_order_idxs <- reactiveVal(c())
 
-  # Initialize reactive data
+  # Initialize reactive data with a 'Select' column for row selection
   data <- reactiveVal(
     data.frame(list(
-                AxisID = 1,
+                Select = FALSE,  # Selection column
+                AxisID = as.integer(1),
                 Endpoint = 'Endpoint A', 
                 Estimate = 2, LowerCI = 1, UpperCI = 3),
                stringsAsFactors = FALSE)
-    )
+  )
 
   colspecs_data <- reactiveVal(
       data.frame(
-        column_names=character(0))
+        column_names=character(0),
+        has_boundary=logical(0),
+        column_width=numeric(0),
+        col_idx=integer(0),
+        stringsAsFactors = FALSE
+      )
   )
 
-  br_plot_data <- reactiveVal(
-    data.frame(
-      col1=character(0)
-    )
-  )
-
-  observe({
+  # Update column specifications whenever data changes
+  observeEvent( input$data_table, {
       req(data())
+      df <- data()
+      # Exclude the 'Select' column from column specifications
       colspecs_data(
-        data.frame(list(
-          column_names = colnames(data()),
+        data.frame(
+          column_names = colnames(df)[colnames(df) != "Select"],
           has_boundary = TRUE,
           column_width = 0.1,
-          col_idx = NA)
-      ))
+          #col_idx = NA,
+          stringsAsFactors = FALSE
+        ) %>% left_join(colspecs_data() %>% select(column_names, col_idx))
+      )
   })
 
   axes_data <- reactiveVal(
@@ -179,88 +171,163 @@ server <- function(input, output, session) {
       list(
         id = 1,
         label = 'Difference (95% CI)',
-        islog = TRUE,
+        islog = FALSE,
         logbase = 2.0,
         isreversed = FALSE
-      )
+      ),
+      stringsAsFactors = FALSE
     )
   )
   
-  # Add Column
+  # Add Column Button: Show Modal to Enter Column Name
   observeEvent(input$add_col, {
-    new_col <- input$column_name
-    if(is.na(new_col) | new_col=='' | new_col %in% colnames(data())) {
-        new_col <- paste0('Column_', ncol(data())+1)
+    showModal(modalDialog(
+      title = "Add New Column",
+      textInput("new_col_name_modal", "Enter Column Name:", ""),
+      easyClose = TRUE,
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_add_col", "Add", class = "btn-primary")
+      )
+    ))
+  })
+
+  # Confirm Add Column
+  observeEvent(input$confirm_add_col, {
+    new_col <- trimws(input$new_col_name_modal)
+    removeModal()
+    if(new_col == "") {
+      showModal(modalDialog(
+        title = "Error",
+        "Column name cannot be empty.",
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+      return()
     }
-    
+    if(new_col %in% colnames(data())) {
+      showModal(modalDialog(
+        title = "Error",
+        paste("Column", new_col, "already exists."),
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+      return()
+    }
+
     current_data <- data()
-    current_data[[new_col]] <- ""
+    current_data[[new_col]] <- ""  # Initialize new column with empty strings
+
+    # Ensure 'Select' column exists
+    if(!"Select" %in% colnames(current_data)) {
+      current_data$Select <- FALSE
+    }
+
     data(current_data)
 
-    # update select input for renaming
-    updateSelectInput(session, "current_col_name", choices = colnames(data()))
-
-    # update other select inputs
-    current_est <- input$estimate_column
-    current_low <- input$lowerci_column
-    current_high <- input$upperci_column
-
-    all_column_names <- colnames(data())
-
-    updateSelectInput(session, 'estimate_column',
-                    choices = all_column_names[all_column_names!=current_low & all_column_names!=current_high],
-                    selected = current_est)
-
-    updateSelectInput(session, 'lowerci_column',
-                    choices = all_column_names[all_column_names!=current_est & all_column_names!=current_high],
-                    selected = current_low)
-
-    updateSelectInput(session, 'upperci_column',
-                    choices = all_column_names[all_column_names!=current_low & all_column_names!=current_est],
-                    selected = current_high)
+    # Update column specifications
+    df_spec <- colspecs_data()
+    df_spec <- rbind(df_spec, data.frame(
+      column_names = new_col,
+      has_boundary = TRUE,
+      column_width = 0.1,
+      col_idx = NA,
+      stringsAsFactors = FALSE
+    ))
+    colspecs_data(df_spec)
   })
 
-  
-  # Remove Selected Columns
+  # Remove Column Button: Show Modal to Select Column to Remove
   observeEvent(input$remove_col, {
-    selected_cols <- input$remove_column_name
-    if (selected_cols %in% colnames(data()) & selected_cols!='AxisID') {
-      current_data <- data()
-      selected_col_idx <- which(colnames(data()) == selected_cols)
-      current_data <- current_data[, -selected_col_idx, drop = FALSE]
-      data(current_data)
-    } else {
-        showModal(modalDialog(
-            title = "Warning!",
-            sprintf("whaaat? Column [%s] is not present???", selected_cols),
-            easyClose = TRUE,
-            footer = tagList(
-                modalButton("OK")
-            )
-        ))
+    df <- colspecs_data()
+    if(nrow(df) == 0) {
+      showModal(modalDialog(
+        title = "Error",
+        "No columns available to remove.",
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+      return()
     }
+    showModal(modalDialog(
+      title = "Remove Columns",
+      checkboxGroupInput("cols_to_remove", "Select Columns to Remove:", choices = df$column_names),
+      easyClose = TRUE,
+      footer = tagList(
+        modalButton("Cancel"),
+        actionButton("confirm_remove_col", "Remove", class = "btn-danger")
+      )
+    ))
   })
-  
-  # Add Row
-  observeEvent(input$add_row, {
-    new_row <- setNames(as.list(rep("", ncol(data()))), names(data()))
+
+  # Confirm Remove Columns
+  observeEvent(input$confirm_remove_col, {
+    cols_to_remove <- input$cols_to_remove
+    removeModal()
+    if(is.null(cols_to_remove) || length(cols_to_remove) == 0) {
+      showModal(modalDialog(
+        title = "Error",
+        "No columns selected for removal.",
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
+      return()
+    }
+
     current_data <- data()
-    data(rbind(current_data, new_row))
+    current_data <- current_data[, !(colnames(current_data) %in% cols_to_remove), drop = FALSE]
+    data(current_data)
+
+    # Update column specifications
+    df_spec <- colspecs_data()
+    df_spec <- df_spec[!(df_spec$column_names %in% cols_to_remove), ]
+    colspecs_data(df_spec)
   })
-  
+
+  # Remove Selected Columns directly via table (Alternative Approach)
+  # Since rhandsontable doesn't support column selection, using modal dialogs is more straightforward.
+
+  # Add Row functionality is handled directly by rhandsontable's built-in features.
+
+  # Assign row to axis based on 'Select' checkbox
+  observeEvent(input$data_table, {
+    req(input$data_table)
+    new_data <- hot_to_r(input$data_table)
+    
+    # Ensure 'Select' column exists
+    if(!"Select" %in% colnames(new_data)) {
+      new_data$Select <- FALSE
+    }
+    
+    data(new_data)
+  })
+
   # Remove Selected Rows
   observeEvent(input$remove_row, {
-    selected_rows <- input$data_table_rows_selected
+    current_data <- data()
+    selected_rows <- which(current_data$Select)
+    
     if (length(selected_rows) > 0) {
-      current_data <- data()
-      current_data <- current_data[-selected_rows, , drop = FALSE]
+      # Prevent removal of essential columns like 'AxisID'
+      if("AxisID" %in% colnames(current_data)) {
+        current_data <- current_data[-selected_rows, , drop = FALSE]
+      } else {
+        current_data <- current_data[-selected_rows, ]
+      }
       data(current_data)
+    } else {
+      showModal(modalDialog(
+        title = "Warning!",
+        "No rows selected for removal.",
+        easyClose = TRUE,
+        footer = modalButton("OK")
+      ))
     }
   })
 
-  # assign row to axis
+  # Assign row to axis
   observeEvent(input$add_to_axis_btn, {
-    selected_rows <- input$data_table_rows_selected
+    selected_rows <- which(data()$Select)
     if (length(selected_rows) > 0) {
       current_data <- data()
       current_data[selected_rows, 'AxisID'] <- as.numeric(input$add_to_axis_number)
@@ -279,6 +346,11 @@ server <- function(input, output, session) {
         names(df)[names(df) == selected_col_name] <- new_col_name
         data(df)
         updateSelectInput(session, 'current_col_name', choices=colnames(data()))
+        
+        # Also update column specifications
+        df_spec <- colspecs_data()
+        df_spec$column_names[df_spec$column_names == selected_col_name] <- new_col_name
+        colspecs_data(df_spec)
     }
   })
 
@@ -307,17 +379,17 @@ server <- function(input, output, session) {
         islog = input$axis_islog=='Yes',
         logbase= ifelse(input$axis_islog=='Yes' & is.na(as.numeric(input$axis_logbase)), 
                         2, as.numeric(input$axis_logbase))
-      )
+      ),
+      stringsAsFactors = FALSE
     )
 
     df$logbase <- as.numeric(df$logbase)
     df <- bind_rows(
       df,
-      new_axis_df,
+      new_axis_df
     )
 
     axes_data(df)
-
   })
 
   observeEvent(axes_data(), {
@@ -421,11 +493,6 @@ server <- function(input, output, session) {
     num_rows(nrow(colspecs_data()))
   })
   
-  # # Add a new row when the "Add Row" button is clicked
-  # observeEvent(input$add_col2, {
-  #   num_rows(num_rows() + 1)
-  # })
-  
   # Render the dynamic table UI
   output$dynamic_col_table <- renderUI({
     req(colspecs_data())
@@ -438,14 +505,14 @@ server <- function(input, output, session) {
       table_rows <- lapply(2:n, function(i) {
         has_boundary <- ifelse(is.na(df$has_boundary[i]), FALSE, df$has_boundary[i])
         col_width <- ifelse(is.na(df$column_width[i]), 0.1, df$column_width[i])
-        is_included <- ifelse(is.na(df$col_idx[i]), FALSE, TRUE)
+        is_show <- ifelse(is.na(df$col_idx[i]), FALSE, TRUE)
         fluidRow(
           # components
           column(4, textOutput(paste0("col_label_", i))),
           column(2, checkboxInput(paste0("col_line_", i), label = NULL, value = has_boundary)),
-          column(3, sliderInput(paste0("col_width_", i), label = NULL, min=0.05, max=0.5, value=col_width)),
-          column(1, checkboxInput(paste0("col_include_", i), label = NULL, value = is_included)),
-          column(2, textOutput(paste0("col_include_no_", i)))
+          column(3, sliderInput(paste0("col_width_", i), label = NULL, min=0.05, max=0.5, value = col_width)),
+          column(1, checkboxInput(paste0("col_show_", i), label = NULL, value = is_show)),
+          column(2, textOutput(paste0("col_show_no_", i)))
         )
       })
     }
@@ -462,9 +529,9 @@ server <- function(input, output, session) {
 
     lapply(2:num_rows(), function(i) {
       output[[paste0("col_label_", i)]] <- renderText({
-        df$column_name[i]
+        df$column_names[i]
       })
-      output[[paste0("col_include_no_", i)]] <- renderText({
+      output[[paste0("col_show_no_", i)]] <- renderText({
         ifelse(is.na(df$col_idx[i]), '', as.character(df$col_idx[i]))
       })
       has_boundary <- as.logical(input[[paste0("col_line_", i)]])
@@ -473,68 +540,74 @@ server <- function(input, output, session) {
       df[i, 'column_width'] <<- ifelse(!is.null(column_width), column_width, 0.1)
     })
 
-    if(any(grepl('col_include_', names(input)))) {
-      lapply(2:num_rows(), function(i) {
-        print(input[[paste0("col_include_", i)]])
-        if(paste0("col_include_", i) %in% names(input)) {
-          if(input[[paste0("col_include_", i)]] & is.na(df$col_idx[i])) {
+    if(any(grepl('col_show_', names(input)))) {
+      lapply(2:num_rows(), function(i) {  
+        if(paste0("col_show_", i) %in% names(input)) {
+          if(input[[paste0("col_show_", i)]] & is.na(df$col_idx[i])) {
             df[i, 'col_idx'] <<- get_next_index(col_idxs)
-          } else if(!input[[paste0("col_include_", i)]]) {
+          } else if(!input[[paste0("col_show_", i)]]) {
             df[i, 'col_idx'] <<- NA
           }
         }
       })
     }
-
     colspecs_data(df)
   })
 
-  # observe({
-  #   print(colspecs_data())
-  # })
+  # Render the editable data table using rhandsontable
+  output$data_table <- renderRHandsontable({
+    df <- data()
+    
+    # Ensure 'Select' column exists
+    if(!"Select" %in% colnames(df)) {
+      df$Select <- FALSE
+    }
+    
+    rhandsontable(df, 
+                  rowHeaders = NULL, 
+                  stretchH = "all",
+                  contextMenu = TRUE,
+                  allowInsertRow = TRUE,
+                  allowRemoveRow = TRUE,
+                  allowInsertColumn = FALSE,  # Columns are managed via UI buttons
+                  allowRemoveColumn = FALSE) %>%
+      hot_col("Select", type = "checkbox")
+  })
   
-  # Render the editable data table
-  output$data_table <- renderDT({
-    datatable(
-      data(), 
-      editable = TRUE, 
-      selection = list(mode = "multiple", target = "row"),
-      options = list(
-        dom = 't',  # Hides the table controls (search, length, etc.)
-        pageLength = 10,
-        autoWidth = TRUE,
-        columnDefs = list(list(width = '150px', targets = "_all"))
-      ),
-      class = 'table table-striped table-bordered'
-    )
-  }, server = TRUE)
-  
-  # Update the data when edited
-  observeEvent(input$data_table_cell_edit, {
-    info <- input$data_table_cell_edit
-    current_data <- data()
-    current_data[info$row, info$col] <- info$value
-    data(current_data)
+  # Update the data when the table is edited
+  observeEvent(input$data_table, {
+    req(input$data_table)
+    new_data <- hot_to_r(input$data_table)
+    
+    # Ensure 'Select' column exists
+    if(!"Select" %in% colnames(new_data)) {
+      new_data$Select <- FALSE
+    }
+    
+    data(new_data)
   })
 
+  # Update select inputs based on column specifications
   observe({
     req(colspecs_data())
     req(data())
 
     col_data <- colspecs_data()
-    col_data <- col_data[!is.na(col_data$col_idx),]
-
-    col_data <- col_data[order(col_data$col_idx),]
+    #col_data <- col_data[!is.na(col_data$col_idx),]
+    #col_data <- col_data[order(col_data$col_idx),]
 
     df <- data()
-    df <- df[, c(col_data$column_names)]
+    # if("Select" %in% colnames(df)) {
+    #   df <- df[, c("Select", col_data$column_names), drop = FALSE]
+    # } else {
+    #   df <- df[, c(col_data$column_names), drop = FALSE]
+    # }
 
     if(!is.null(df) & class(df)=='data.frame') {
       if(ncol(df)>0) {
-        #numeric_df <- df[sapply(df, is.numeric)]
-        #numeric_cols <- colnames(numeric_df)
-
         numeric_cols <- colnames(df)
+        # Exclude 'Select' from choices
+        numeric_cols <- setdiff(numeric_cols, "Select")
         updateSelectInput(session, "est_col", choices=rotate_vector(numeric_cols, 1))
         updateSelectInput(session, "lci_col", choices=rotate_vector(numeric_cols, 2))
         updateSelectInput(session, "uci_col", choices=rotate_vector(numeric_cols, 3))
@@ -548,26 +621,29 @@ server <- function(input, output, session) {
     updateSliderInput(session, "neutral_pos_n", max=as.integer(input$neutral_pos_N)-1)
   })
 
-  # plot
+  # Plot
   observeEvent(input$br_refresh, {
     req(colspecs_data())
     req(data())
 
     col_data <- colspecs_data()
     col_data <- col_data[!is.na(col_data$col_idx),]
-
     col_data <- col_data[order(col_data$col_idx),]
 
     col_widths <- col_data$column_width
-    if(sum(col_widths)>0.8) {
-      col_widths <- 0.8*col_widths/sum(col_widths)
+    if(sum(col_widths) > 0.8) {
+      col_widths <- 0.8 * col_widths / sum(col_widths)
     } 
     col_sep <-  col_data$has_boundary
     col_widths <- col_widths * ifelse(col_sep, 1, -1)
 
     df <- data()
     
-    df <- df[, unique(c('AxisID', col_data$column_names))]
+    if("Select" %in% colnames(df)) {
+      df <- df[, c("AxisID", colspecs_data()$column_names), drop = FALSE]
+    } else {
+      df <- df[, c("AxisID", colspecs_data()$column_names), drop = FALSE]
+    }
 
     axes_df <- axes_data()
 
@@ -582,10 +658,8 @@ server <- function(input, output, session) {
       box_col_name   <- input[['box_col']]
       color_col_name <- input[['color_col']]
 
-      cat(sprintf('color_col_name = %s\n', color_col_name))
-
       if(length(unique(c(value_col_name, lci_col_name, uci_col_name)))==3) {
-        df_colnames <- colnames(df)
+        df_colnames <- c('AxisID', col_data$column_names) #colnames(df)
         df_colnames_ <- gsub(paste0('^', value_col_name, '$'), 'value', df_colnames)
         df_colnames_ <- gsub(paste0('^', lci_col_name, '$'), 'lower', df_colnames_)
         df_colnames_ <- gsub(paste0('^', uci_col_name, '$'), 'upper', df_colnames_)
@@ -595,21 +669,29 @@ server <- function(input, output, session) {
         df$lower <- as.numeric(df$lower)
         df$upper <- as.numeric(df$upper)
 
-        df_colnames_ <- df_colnames_[df_colnames_!='AxisID']
-        names(df_colnames_) <- df_colnames[df_colnames!='AxisID']
+        #df_colnames_ <- df_colnames_[df_colnames_!='AxisID']
+        names(df_colnames_) <- df_colnames #[df_colnames!='AxisID']
 
-        df_colnames <- df_colnames_
+        df_colnames <- df_colnames_[df_colnames_!='AxisID']
 
         adf_colnames <- colnames(axes_df)
         adf_colnames <- gsub('^islog$', 'logscale', adf_colnames)
         adf_colnames <- gsub('^isreversed$', 'reversed', adf_colnames)
         colnames(axes_df) <- adf_colnames
 
-        axes_df$id <- as.character(axes_df$id)
-        df$AxisID  <- as.character(df$AxisID)
+        # axes_df$id <- as.character(axes_df$id)
+        # df$AxisID  <- as.character(df$AxisID)
 
-        plot_df <- df %>% left_join(axes_df, by=c('AxisID'='id')) %>% 
-          mutate(tmp=1, logbase=as.numeric(logbase))
+        plot_df <- data() %>% left_join(axes_df, by=c('AxisID'='id')) %>% 
+          mutate(tmp=1, logbase=as.numeric(logbase)) %>%
+          rename(
+            'value' := value_col_name,
+            'lower' := lci_col_name,
+            'upper' := uci_col_name
+            )
+
+        print(plot_df)
+        print(df_colnames)
    
         arrow_labels <- NULL
         if(input$reverse_arrows) {
@@ -651,12 +733,10 @@ server <- function(input, output, session) {
             br_fun()
             dev.off()  # Close the device
           })
-
-
       }
     }
   })
-
 }
 
+# Run the application 
 shinyApp(ui = ui, server = server)
