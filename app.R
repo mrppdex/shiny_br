@@ -11,7 +11,7 @@ options(shiny.fullstacktrace = FALSE)
 
 # Load brrr from cloned repo
 current_wd <- getwd()
-setwd("/Users/mrppdex/projects/R/brrr")
+setwd("brrr/")
 devtools::load_all()
 setwd(current_wd)
 
@@ -118,7 +118,10 @@ ui <- page_sidebar(
             column(4, textInput("output_width", "Width", value=1000)),
             column(4, textInput("output_height", "Height", value=400)),
             column(4, sliderInput("dpi", "DPI", min = 72, max = 300, value = 150))
-        ))
+          ),
+          fluidRow(
+            column(6, sliderInput("out_rel_size", "Zoom", min=0.1, max=3, value=2))
+          ))
       ),
       plotOutput("br_plot")
     )
@@ -699,8 +702,8 @@ server <- function(input, output, session) {
         } else {
           arrow_labels <- rev(c(input$right_arrow, input$left_arrow))
         }
-
-        br_fun <- function() {
+        
+        br_fun <- function(ops=page_options$new()) {
           plot_br(
             plot_df,
             df_colnames,
@@ -713,12 +716,19 @@ server <- function(input, output, session) {
             neutral_pos = as.integer(input$neutral_pos_n),
             num_ticks = as.integer(input$neutral_pos_N),
             value_collapse = rep(FALSE, length(df_colnames)),
-            options_br = page_options$new()
+            options_br = ops
           )
         }
 
         output$br_plot <- renderPlot({
-          br_fun()
+          plot_ops <- page_options$new()
+          plot_ops$row.label.font.size <- input$out_rel_size*plot_ops$row.label.font.size 
+          plot_ops$label.font.size <- input$out_rel_size*plot_ops$label.font.size
+          plot_ops$header.label.font.size <- input$out_rel_size*plot_ops$header.label.font.size
+          plot_ops$axis.label.font.size <- input$out_rel_size*plot_ops$axis.label.font.size
+          plot_ops$axis.ticks.font.size <- input$out_rel_size*plot_ops$axis.ticks.font.size
+          
+          br_fun(plot_ops)
         })
 
         output$download_png <- downloadHandler(
