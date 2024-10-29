@@ -5,15 +5,19 @@ library(rhandsontable)  # Replacing DT with rhandsontable
 library(bslib)
 library(dplyr)
 library(tidyr)
+library(shinyAce)
+library(gt)
 
 options(shiny.minified=TRUE)
 options(shiny.fullstacktrace = FALSE)
 
 # Load brrr from cloned repo
 current_wd <- getwd()
-setwd("/Users/mrppdex/projects/R/brrr")
+setwd("brrr/")
 devtools::load_all()
 setwd(current_wd)
+
+source('code_template.R')
 
 # Helper functions
 get_next_index <- function(vec) {
@@ -32,12 +36,31 @@ rotate_vector <- function(x, k) {
   return(c(x[(k+1):length(x)], x[1:k]))
 }
 
-# Define UI
+# Define UI ####
 ui <- page_sidebar(
   title = "Benefit-Risk Visualization Tool",
   header = tags$head(useShinyjs()),
   # Removed sidebar
   navset_card_tab(
+    nav_panel("Read Data",
+              textInput("loa_path", "Specify LOA Folder:", placeholder = "Enter path here"),
+              fileInput("fileLOA", "Select LOA File", accept = ".csv"),
+              tableOutput("contents"),
+    ),
+    ## Code ####
+    nav_panel("Code",
+              aceEditor('rCode', mode='r', theme='monokai', height='400px'),
+              actionButton('runCode', 'Run Code'),
+              verbatimTextOutput('console'), 
+              h4("Select Data Frame"),
+              fluidRow(
+                column(3, fileInput("codeUpload", label=NULL, accept=c(".R", ".r"))),
+                column(3, selectInput('dfSelect', label=NULL, choices=NULL)),
+                column(3, actionButton('useCodeDfBtn', label='Use this Data Frame'))
+              ),
+              card(rHandsontableOutput("preview_data_table"))
+              ),
+    ## Input Data ####
     nav_panel("Input Data", 
       fluidRow(
         column(6, actionButton("add_col", "Add Column", class = "btn-primary")),
@@ -46,6 +69,7 @@ ui <- page_sidebar(
       hr(),
       rHandsontableOutput("data_table")  # Replaced DTOutput with rHandsontableOutput
     ),
+    ## Axes ####
     nav_panel("Axes",
         actionButton("add_axis", "Add Axis"),
         br(),
@@ -70,9 +94,11 @@ ui <- page_sidebar(
         hr(),
         actionButton("delete_axes", "Remove selected", class="btn-danger")
     ),
+    ## Columns ####
     nav_panel("Columns", 
         fluidRow(
-          column(4, p("Column Name")),
+          column(2, p("Column Name")),
+          column(2, p("Label")),
           column(2, p("Separate")),
           column(3, p("Width")),
           column(1, p("Show")),
@@ -80,6 +106,7 @@ ui <- page_sidebar(
         ),
         uiOutput("dynamic_col_table")
     ),
+    ## Plot Options ####
     nav_panel("Plot Options",
       actionButton("br_refresh", "Refresh"),
       accordion(
@@ -110,6 +137,7 @@ ui <- page_sidebar(
         )
       )
     ),
+    ## Plot ####
     nav_panel("Plot",
       downloadButton("download_png", "Download Plot as PNG"),
       accordion(
@@ -118,15 +146,29 @@ ui <- page_sidebar(
             column(4, textInput("output_width", "Width", value=1000)),
             column(4, textInput("output_height", "Height", value=400)),
             column(4, sliderInput("dpi", "DPI", min = 72, max = 300, value = 150))
-        ))
+          ),
+          fluidRow(
+            column(6, sliderInput("out_rel_size", "Zoom", min=0.1, max=3, value=2))
+          ))
       ),
       plotOutput("br_plot")
+    ),
+    ## Effects Table ####
+    nav_panel("Effects Table",
+              #downloadButton("download_png", "Download Plot as PNG"),
+              gt_output('effects_table')
     )
   )
 )
 
-# Define Server
+# Define Server ####
 server <- function(input, output, session) {
+  # code execution result
+  codeResult <- reactiveVal(NULL)
+  
+  # code data frames
+  code_df_names <- reactiveVal(NULL)
+  
   # Column order index tracker
   col_order_idxs <- reactiveVal(c())
 
@@ -143,6 +185,7 @@ server <- function(input, output, session) {
   colspecs_data <- reactiveVal(
       data.frame(
         column_names=character(0),
+        column_label=character(0),
         has_boundary=logical(0),
         column_width=numeric(0),
         col_idx=integer(0),
@@ -158,7 +201,8 @@ server <- function(input, output, session) {
       colspecs_data(
         data.frame(
           column_names = colnames(df)[colnames(df) != "Select"],
-          has_boundary = TRUE,
+          column_labels = colnames(df)[colnames(df) != "Select"],
+          has_boundary = FALSE,
           column_width = 0.1,
           #col_idx = NA,
           stringsAsFactors = FALSE
@@ -229,6 +273,7 @@ server <- function(input, output, session) {
     df_spec <- colspecs_data()
     df_spec <- rbind(df_spec, data.frame(
       column_names = new_col,
+      column_labelS = new_col,
       has_boundary = TRUE,
       column_width = 0.1,
       col_idx = NA,
@@ -350,6 +395,7 @@ server <- function(input, output, session) {
         # Also update column specifications
         df_spec <- colspecs_data()
         df_spec$column_names[df_spec$column_names == selected_col_name] <- new_col_name
+        df_spec$column_labels[df_spec$column_names == selected_col_name] <- new_col_name
         colspecs_data(df_spec)
     }
   })
@@ -506,9 +552,11 @@ server <- function(input, output, session) {
         has_boundary <- ifelse(is.na(df$has_boundary[i]), FALSE, df$has_boundary[i])
         col_width <- ifelse(is.na(df$column_width[i]), 0.1, df$column_width[i])
         is_show <- ifelse(is.na(df$col_idx[i]), FALSE, TRUE)
+        col_label <- ifelse(is.na(df$column_names[i]), "", df$column_names[i])
         fluidRow(
           # components
-          column(4, textOutput(paste0("col_label_", i))),
+          column(2, textOutput(paste0("col_label_", i))),
+          column(2, textInput(paste0("col_dlabel_", i), label=NULL, value = col_label)),
           column(2, checkboxInput(paste0("col_line_", i), label = NULL, value = has_boundary)),
           column(3, sliderInput(paste0("col_width_", i), label = NULL, min=0.05, max=0.5, value = col_width)),
           column(1, checkboxInput(paste0("col_show_", i), label = NULL, value = is_show)),
@@ -534,8 +582,12 @@ server <- function(input, output, session) {
       output[[paste0("col_show_no_", i)]] <- renderText({
         ifelse(is.na(df$col_idx[i]), '', as.character(df$col_idx[i]))
       })
+      
+      dlabel       <- input[[paste0("col_dlabel_", i)]]
       has_boundary <- as.logical(input[[paste0("col_line_", i)]])
       column_width <- as.numeric(input[[paste0("col_width_", i)]])
+      
+      df[i, 'column_labels'] <<- ifelse(!is.null(dlabel), dlabel, df$column_names[i])
       df[i, 'has_boundary'] <<- ifelse(!is.null(has_boundary), has_boundary, TRUE)
       df[i, 'column_width'] <<- ifelse(!is.null(column_width), column_width, 0.1)
     })
@@ -621,7 +673,7 @@ server <- function(input, output, session) {
     updateSliderInput(session, "neutral_pos_n", max=as.integer(input$neutral_pos_N)-1)
   })
 
-  # Plot
+  ## Plot ####
   observeEvent(input$br_refresh, {
     req(colspecs_data())
     req(data())
@@ -647,6 +699,8 @@ server <- function(input, output, session) {
 
     axes_df <- axes_data()
 
+    print('DEBUG 1')
+    
     if(class(df)=="data.frame") {
       column_specs <- colnames(df)
       column_specs <- column_specs[2:length(column_specs)]
@@ -658,22 +712,38 @@ server <- function(input, output, session) {
       box_col_name   <- input[['box_col']]
       color_col_name <- input[['color_col']]
 
+      print('DEBUG 2')
+      
       if(length(unique(c(value_col_name, lci_col_name, uci_col_name)))==3) {
         df_colnames <- c('AxisID', col_data$column_names) #colnames(df)
-        df_colnames_ <- gsub(paste0('^', value_col_name, '$'), 'value', df_colnames)
-        df_colnames_ <- gsub(paste0('^', lci_col_name, '$'), 'lower', df_colnames_)
-        df_colnames_ <- gsub(paste0('^', uci_col_name, '$'), 'upper', df_colnames_)
-        colnames(df) <- df_colnames_
-
+        
+        print(df_colnames)
+        
+        # df_colnames_ <- gsub(paste0('^', value_col_name, '$'), 'value', df_colnames)
+        # df_colnames_ <- gsub(paste0('^', lci_col_name, '$'), 'lower', df_colnames_)
+        # df_colnames_ <- gsub(paste0('^', uci_col_name, '$'), 'upper', df_colnames_)
+        
+        df_colnames[df_colnames==value_col_name] <- 'value'
+        df_colnames[df_colnames==lci_col_name] <- 'lower'
+        df_colnames[df_colnames==uci_col_name] <- 'upper'
+        
+        print('DEBUG 2A')
+        colnames(df) <- df_colnames
+        
         df$value <- as.numeric(df$value)
         df$lower <- as.numeric(df$lower)
         df$upper <- as.numeric(df$upper)
 
+        print('DEBUG 2B')
         #df_colnames_ <- df_colnames_[df_colnames_!='AxisID']
-        names(df_colnames_) <- df_colnames #[df_colnames!='AxisID']
+        #names(df_colnames_) <- df_colnames #[df_colnames!='AxisID']
 
-        df_colnames <- df_colnames_[df_colnames_!='AxisID']
+        #df_colnames <- df_colnames_[df_colnames_!='AxisID']
 
+        names(df_colnames) <- df_colnames
+        df_colnames <- df_colnames[df_colnames!='AxisID']
+        
+        print('DEBUG 2C')
         adf_colnames <- colnames(axes_df)
         adf_colnames <- gsub('^islog$', 'logscale', adf_colnames)
         adf_colnames <- gsub('^isreversed$', 'reversed', adf_colnames)
@@ -682,6 +752,9 @@ server <- function(input, output, session) {
         # axes_df$id <- as.character(axes_df$id)
         # df$AxisID  <- as.character(df$AxisID)
 
+        print('DEBUG 3')
+        
+        ### plot_df ####
         plot_df <- data() %>% left_join(axes_df, by=c('AxisID'='id')) %>% 
           mutate(tmp=1, logbase=as.numeric(logbase)) %>%
           rename(
@@ -689,7 +762,23 @@ server <- function(input, output, session) {
             'lower' := lci_col_name,
             'upper' := uci_col_name
             )
+        
+        ##
+        print(colspecs_data())
+        for(i in 1:nrow(colspecs_data())) {
+          cat(sprintf('DEBUG: in the loop\n'))
+          tname <- colspecs_data()$column_names[i]
+          tlabel <- colspecs_data()$column_label[i]
 
+          # tlabel <- ifelse(tlabel=="" | is.na(tlabel), tname, tlabel)
+          # 
+          cat(sprintf("DEBUG: tname=[%s], tlabel=[%s]\n", tname, tlabel))
+          # 
+          # if (tname %in% names(df_colnames)) {
+          #   df_colnames[tname] <- tlabel
+          # }
+        }
+        
         print(plot_df)
         print(df_colnames)
    
@@ -699,8 +788,12 @@ server <- function(input, output, session) {
         } else {
           arrow_labels <- rev(c(input$right_arrow, input$left_arrow))
         }
-
-        br_fun <- function() {
+        
+        # DEBUG
+        print(plot_df)
+        
+        ### br_fun ####
+        br_fun <- function(ops=page_options$new()) {
           plot_br(
             plot_df,
             df_colnames,
@@ -713,14 +806,23 @@ server <- function(input, output, session) {
             neutral_pos = as.integer(input$neutral_pos_n),
             num_ticks = as.integer(input$neutral_pos_N),
             value_collapse = rep(FALSE, length(df_colnames)),
-            options_br = page_options$new()
+            options_br = ops
           )
         }
 
+        ### output$br_plot ####
         output$br_plot <- renderPlot({
-          br_fun()
+          plot_ops <- page_options$new()
+          plot_ops$row.label.font.size <- input$out_rel_size*plot_ops$row.label.font.size 
+          plot_ops$label.font.size <- input$out_rel_size*plot_ops$label.font.size
+          plot_ops$header.label.font.size <- input$out_rel_size*plot_ops$header.label.font.size
+          plot_ops$axis.label.font.size <- input$out_rel_size*plot_ops$axis.label.font.size
+          plot_ops$axis.ticks.font.size <- input$out_rel_size*plot_ops$axis.ticks.font.size
+          
+          br_fun(plot_ops)
         })
 
+        ### output$download_png ####
         output$download_png <- downloadHandler(
           filename = function() {
             paste("plot", Sys.Date(), ".png", sep = "")
@@ -736,6 +838,155 @@ server <- function(input, output, session) {
       }
     }
   })
+  
+  ## input$runCode ####
+  observeEvent(input$runCode, {
+    code <- input$rCode
+    
+    result <- tryCatch({
+      res <- eval(parse(text=code), envir=.GlobalEnv)
+    
+      # retrieve the list of data frames
+      all_objects <- ls(envir = .GlobalEnv)
+      
+      data_frames <- sapply(all_objects, function(x) {
+        is.data.frame(get(x, envir=.GlobalEnv))
+      })
+      
+      code_df_names(names(data_frames[data_frames]))
+      print(code_df_names)
+    
+      res
+    }, error = function(e) {
+      paste("Error:", e$message)
+    })
+    codeResult(result)
+  })
+  
+  output$console <- renderText({
+    req(codeResult())
+    unlist(codeResult())
+  })
+  
+  observe({
+    updateSelectInput(session, "dfSelect", choices=code_df_names())
+  })
+  
+  ### preview data frame ####
+  # Render the editable data table using rhandsontable
+  output$preview_data_table <- renderRHandsontable({
+    req(input$dfSelect)
+    
+    df <- get(input$dfSelect, envir = .GlobalEnv)
+    
+    rhandsontable(df, 
+                  rowHeaders = NULL, 
+                  stretchH = "all",
+                  contextMenu = TRUE,
+                  allowInsertRow = TRUE,
+                  allowRemoveRow = TRUE,
+                  allowInsertColumn = FALSE,
+                  allowRemoveColumn = FALSE)
+  })
+  
+  # replace data
+  
+  observeEvent(input$useCodeDfBtn, {
+    df <- get(input$dfSelect, envir = .GlobalEnv)
+    
+    if(!is.null(df) & nrow(df)>0) {
+      
+      if(!'AxisID' %in% colnames(df)) {
+        df <- df %>% mutate(AxisID=as.integer(1)) %>% select(AxisID, everything())
+      }
+      
+      data(df)
+    }
+    
+  })
+  
+  ### Code Upload ####
+  
+  observeEvent(input$codeUpload, {
+    req(input$codeUpload)
+    
+    file_content <- readLines(input$codeUpload$datapath, warn=FALSE)
+    
+    updateAceEditor(session, 'rCode', value=paste(file_content, collapse="\n"))
+  })
+  
+  
+  ### Effects Table ####
+  output$effects_table <- render_gt({
+    req(data())
+    
+    BRdata_path <- "/lrlhps/data/sdna_va/immunology/Benefit_Risk/R/BRdata/"
+    BRloa_path <- "/lrlhps/data/sdna_va/immunology/Benefit_Risk/R/user_input/"
+    
+    BR_LOA <- read.csv(paste0(BRloa_path, "benefit_risk_LOA.csv"))
+    BRdata_binary <- read.csv(file = paste0(BRdata_path, "BRdata_binary.csv"))
+    
+    tab <- NULL
+    if (nrow(BRdata_binary)>0) {
+        print(BRdata_binary)
+          tab1 <- BR_LOA %>% filter(endpoint_type=="binary") %>% select(parameter, timepoint, short.descriptions.in.effect.table, unit) %>%
+        mutate(unit = stringr::str_replace(unit, "%", "% <br>")) %>% 
+        mutate(effect = paste0(parameter, ", <br>", timepoint))
+      
+      tab2 <- BRdata_binary %>% mutate_if(is.numeric, function(x) format(round(x, digits=1), nsmall = 1) ) %>% mutate(
+        ref = paste0(Cmp_Percentage, " <br> (", Cmp_95..CI.Low, ", ", Cmp_95..CI.Low, ")"),
+        trt = paste0(TRT_Percentage, " <br>(", TRT_95..CI.Low, ", ", TRT_95..CI.Low, ")")
+      ) %>% select(parameter, ref, trt) 
+      
+      tab <- tab1 %>% left_join(tab2) %>% select(effect, short.descriptions.in.effect.table, unit, ref, trt) %>% 
+        mutate(type = "Favorable Effects") %>% gt() %>%
+        fmt_markdown(columns = everything()) %>%
+        tab_row_group(
+          label = md("**Favorable Effects**"),
+          rows = type == "Favorable Effects"
+        ) %>% cols_hide(type) %>%
+        cols_align(
+          align = "center",
+          columns = c(ref, trt, unit)
+        ) %>%
+        cols_label(
+          effect = md("**Effect**"),
+          short.descriptions.in.effect.table = md("**Short Description**"),
+          unit = md("**Unit**"),
+          ref = md("**Placebo**"),
+          trt = md("**LY Treatment**")
+        ) %>%
+        tab_options()
+    }
+
+    tab
+  })
+  
+  dataLOA <- reactive({
+    req(input$fileLOA)
+    loa_fname <- paste0(input$loa_path, '/', input$fileLOA$name)
+    
+    
+    updateAceEditor(session, 'rCode', value=full_code_fun(loa_fname, 
+                                                          input$fileLOA$datapath))
+    
+    #output$rCode <- full_code_fun(input$fileLOA$datapath)
+    
+    read.csv(input$fileLOA$datapath)
+  })
+  
+  output$contents <- renderTable({
+    dataLOA()
+  })
+  
+  observe({
+    req(input$loa_path)
+    
+    if (input$loa_path == "") {
+      showNotification("Root path cannot be empty!", type = "warning")
+    }
+  })
+  
 }
 
 # Run the application 
